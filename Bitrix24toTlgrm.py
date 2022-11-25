@@ -62,7 +62,9 @@ class Bitrix24Parser:
         db_proxy.initialize(self.db)
         self.db.create_tables([self.deals_db])
         self.emoji = {
-            'person': '\U0001F9D1'
+            'person': '\U0001F9D1',
+            'pin': '\U0001F4CC',
+            'doc': '\U0001F4CB'
         }
 
     def run(self):
@@ -116,9 +118,10 @@ class Bitrix24Parser:
 
     def generate_message(self, deal):
         user_name = markdownv2_converter(self.users[deal['assigned_by_id']])
-        bid = markdownv2_converter(deal['id'])
-        message_text = markdownv2_converter(deal["title"])
-        message = f'Заявка №*{bid}*\nОтветственный: {self.emoji["person"]}__*{user_name}*__\n\n{message_text}'
+        bid = f'{self.emoji["pin"]}Заявка №*{markdownv2_converter(deal["id"])}*'
+        responsible = f'Ответственный: {self.emoji["person"]}__*{user_name}*__'
+        message_text = f'{self.emoji["doc"]}{markdownv2_converter(deal["title"])}'
+        message = f'{bid}\n{responsible}\n\n{message_text}'
         return message
 
     def remove_closed_deals_db(self):

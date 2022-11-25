@@ -45,6 +45,7 @@ class Deals(BaseModel):
     date_create = peewee.DateTimeField()
     title = peewee.TextField()
     comments = peewee.TextField()
+    message_id = peewee.IntegerField()
 
 
 class Bitrix24Parser:
@@ -112,6 +113,7 @@ class Bitrix24Parser:
             message_text = self.generate_message(deal_lower)
             message_id = self.bot.send_text_message(message_text)
             if message_id:
+                deal_lower['message_id'] = message_id
                 deals_new_lower.append(deal_lower)
                 time.sleep(3.5)
         self.deals_db.insert_many(deals_new_lower).execute()

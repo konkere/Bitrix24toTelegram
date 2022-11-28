@@ -18,6 +18,10 @@ db_proxy = peewee.DatabaseProxy()
 
 
 def markdownv2_converter(text):
+    """
+    Функция преобразует текст с учётом экранирования требуемых символов:
+    https://core.telegram.org/bots/api#markdownv2-style
+    """
     symbols_for_replace = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for symbol in symbols_for_replace:
         text = text.replace(symbol, '\\' + symbol)
@@ -25,6 +29,9 @@ def markdownv2_converter(text):
 
 
 def check_online(url):
+    """
+    Функция проверяет доступность домена из ссылки
+    """
     parsed_url = urlparse(url)
     base_url = '{uri.scheme}://{uri.netloc}/'.format(uri=parsed_url)
     if requests.get(base_url).status_code == 200:
@@ -39,6 +46,9 @@ class BaseModel(peewee.Model):
 
 
 class Deals(BaseModel):
+    """
+    Скелет БД
+    """
     id = peewee.IntegerField()
     category_id = peewee.IntegerField()
     assigned_by_id = peewee.IntegerField()
@@ -115,6 +125,7 @@ class Bitrix24Parser:
             if message_id:
                 deal_lower['message_id'] = message_id
                 deals_new_lower.append(deal_lower)
+                # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 time.sleep(3.5)
         self.deals_db.insert_many(deals_new_lower).execute()
 

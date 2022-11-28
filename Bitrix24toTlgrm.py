@@ -119,9 +119,14 @@ class Bitrix24Parser:
         self.deals_db.insert_many(deals_new_lower).execute()
 
     def generate_message(self, deal):
-        user_name = markdownv2_converter(self.users[deal['assigned_by_id']])
+        bitrix24_id = deal['assigned_by_id']
+        telegram_id = self.settings.tlgrm_id[bitrix24_id]
+        user_name = markdownv2_converter(self.users[bitrix24_id])
         bid = f'{self.emoji["pin"]}Заявка №*{markdownv2_converter(deal["id"])}*'
-        responsible = f'Ответственный: {self.emoji["person"]}__*{user_name}*__'
+        if telegram_id:
+            responsible = f'Ответственный: {self.emoji["person"]}[__*{user_name}*__](tg://user?id={telegram_id})'
+        else:
+            responsible = f'Ответственный: {self.emoji["person"]}__*{user_name}*__'
         message_text = f'{self.emoji["doc"]}{markdownv2_converter(deal["title"])}'
         message = f'{bid}\n{responsible}\n\n{message_text}'
         return message
@@ -165,11 +170,14 @@ class Conf:
         self.config = ConfigParser()
         self.exist()
         self.config.read(self.config_file)
-        self.botid = self.read('Telegram', 'botid')
-        self.chatid = self.read('Telegram', 'chatid')
-        self.webhook = self.read('Bitrix24', 'webhook')
-        self.db_url = self.db_url_insert_path(self.read('System', 'db'))
-        self.connect = Bitrix(self.webhook, verbose=False)
+        self.botid = self.read_conf('Telegram', 'botid')
+        self.chatid = self.read_conf('Telegram', 'chatid')
+        self.webhook = self.read_conf('Bitrix24', 'webhook')
+        self.db_url = self.db_url_insert_path(self.read_conf('System', 'db'))
+        self.tlgrm_id = {}
+        self.re_tlgrm_id = r'^(\d+)=(\d*)#(.+$)'
+        if os.path.exists(self.telegram_id_list_file):
+            self.tlgrm_id = self.read_telegram_id_list()
 
     def exist(self):
         if not os.path.isdir(self.work_dir):
@@ -205,9 +213,21 @@ class Conf:
             f'<ID Bitrix24>=<ID Телеграм>#<Имя Фамилия (или любой другой текст)>'
         )
 
-    def read(self, section, setting):
+    def read_conf(self, section, setting):
         value = self.config.get(section, setting)
         return value
+
+    def read_telegram_id_list(self):
+        telegram_id_list = {}
+        with open(self.telegram_id_list_file, 'r+') as file:
+            for line in file.readlines():
+                line = line.rstrip('\n')
+                re_line = re.match(self.re_tlgrm_id, line)
+                bitrix24_id = re_line.group(1)
+                tlgrm_id = re_line.group(2)
+                # name = re_line.group(3)
+                telegram_id_list[bitrix24_id] = tlgrm_id
+        return telegram_id_list
 
     def db_url_insert_path(self, db_url):
         pattern = r'(^[A-z]*:\/\/\/)(.*$)'

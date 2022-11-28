@@ -141,6 +141,10 @@ class Bitrix24Parser:
         )
         for user in bitrix24_users:
             self.users[user['ID']] = f'{user["NAME"]} {user["LAST_NAME"]}'
+        if not os.path.exists(self.settings.telegram_id_list_file):
+            self.settings.create_telegram_id_list(self.users)
+        else:
+            pass
 
     def generate_opened_deals(self):
         self.deals_opened = self.connect.get_all(
@@ -155,8 +159,9 @@ class Bitrix24Parser:
 class Conf:
 
     def __init__(self):
-        self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegram')
+        self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegramDEV')
         self.config_file = os.path.join(self.work_dir, 'settings.conf')
+        self.telegram_id_list_file = os.path.join(self.work_dir, 'telegram_id.list')
         self.config = ConfigParser()
         self.exist()
         self.config.read(self.config_file)
@@ -164,17 +169,18 @@ class Conf:
         self.chatid = self.read('Telegram', 'chatid')
         self.webhook = self.read('Bitrix24', 'webhook')
         self.db_url = self.db_url_insert_path(self.read('System', 'db'))
+        self.connect = Bitrix(self.webhook, verbose=False)
 
     def exist(self):
         if not os.path.isdir(self.work_dir):
             os.mkdir(self.work_dir)
         if not os.path.exists(self.config_file):
             try:
-                self.create()
+                self.create_conf()
             except FileNotFoundError as exc:
                 print(exc)
 
-    def create(self):
+    def create_conf(self):
         self.config.add_section('Telegram')
         self.config.add_section('Bitrix24')
         self.config.add_section('System')
@@ -184,7 +190,20 @@ class Conf:
         self.config.set('System', 'db', 'sqlite:///bitrix24deals.db')
         with open(self.config_file, 'w') as config_file:
             self.config.write(config_file)
-        raise FileNotFoundError(f'Required to fill data in config: {self.config_file}')
+        raise FileNotFoundError(f'Требуется внести данные в конфиг: {self.config_file}')
+
+    def create_telegram_id_list(self, users):
+        users_for_write = ''
+        for user in users:
+            users_for_write += f'{user}=#{users[user]}\n'
+        with open(self.telegram_id_list_file, 'w') as list_file:
+            list_file.write(users_for_write)
+        print(
+            f'Можно привязать пользовательские ID Телеграма '
+            f'(для упоминаний с оповещением) в файле: {self.telegram_id_list_file}\n'
+            f'Формат записи (одна на строку):\n'
+            f'<ID Bitrix24>=<ID Телеграм>#<Имя Фамилия (или любой другой текст)>'
+        )
 
     def read(self, section, setting):
         value = self.config.get(section, setting)

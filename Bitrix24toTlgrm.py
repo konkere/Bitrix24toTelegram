@@ -162,6 +162,8 @@ class Bitrix24Parser:
             if message_id:
                 deal_in_db.assigned_by_id = assigned_by_id
                 self.deals_db.bulk_update([deal_in_db], fields=[self.deals_db.assigned_by_id])
+                # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
+                time.sleep(3.5)
 
     def generate_message(self, deal, message_type='new', old_responsible_id=None):
         bitrix24_id = deal['assigned_by_id']

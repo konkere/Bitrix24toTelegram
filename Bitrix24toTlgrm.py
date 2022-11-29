@@ -222,7 +222,7 @@ class Bitrix24Parser:
 class Conf:
 
     def __init__(self):
-        self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegramDEV')
+        self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegram')
         self.config_file = os.path.join(self.work_dir, 'settings.conf')
         self.telegram_id_list_file = os.path.join(self.work_dir, 'telegram_id.list')
         self.config = ConfigParser()

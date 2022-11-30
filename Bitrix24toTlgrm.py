@@ -69,6 +69,7 @@ class Deals(BaseModel):
     title = peewee.TextField()
     comments = peewee.TextField()
     message_id = peewee.IntegerField()
+    message_text = peewee.TextField()
 
 
 class Bitrix24Parser:
@@ -79,6 +80,7 @@ class Bitrix24Parser:
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
+        self.categories = {}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
@@ -90,13 +92,16 @@ class Bitrix24Parser:
             'person': '\U0001F9D1',     # 🧑
             'pin': '\U0001F4CC',        # 📌
             'doc': '\U0001F4CB',        # 📋
-            'recycle': '\U0000267B'     # ♻
+            'recycle': '\U0000267B',    # ♻
+            'category': '\U0001F4CE',   # 📎
+            'check': '\U00002705',      # ✅
         }
 
     def run(self):
         self.generate_users()
+        self.generate_categories()
         self.generate_opened_deals()
-        self.remove_closed_deals_db()
+        self.remove_closed_deals()
         self.check_new_deals()
         if self.deals_change_assigned:
             self.update_db_and_change_assigned()
@@ -143,6 +148,7 @@ class Bitrix24Parser:
             message_id = self.bot.send_text_message(message_text)
             if message_id:
                 deal_lower['message_id'] = message_id
+                deal_lower['message_text'] = message_text
                 deals_new_lower.append(deal_lower)
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 time.sleep(3.5)
@@ -160,8 +166,15 @@ class Bitrix24Parser:
             message_text = self.generate_message(deal, 'update', assigned_by_id_old)
             message_id = self.bot.send_text_message(message_text)
             if message_id:
+                self.bot.delete_message(deal_in_db.message_id)
                 deal_in_db.assigned_by_id = assigned_by_id
-                self.deals_db.bulk_update([deal_in_db], fields=[self.deals_db.assigned_by_id])
+                deal_in_db.message_id = message_id
+                deal_in_db.message_text = message_text
+                self.deals_db.bulk_update([deal_in_db], fields=[
+                    self.deals_db.assigned_by_id,
+                    self.deals_db.message_id,
+                    self.deals_db.message_text,
+                ])
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 time.sleep(3.5)
 
@@ -170,14 +183,16 @@ class Bitrix24Parser:
         deal_id = markdownv2_converter(deal['id'])
         user_name = self.generate_responsible(bitrix24_id)
         bid = f'{self.emoji["pin"]}Заявка №*{deal_id}*'
+        category_name = markdownv2_converter(self.categories[deal['category_id']])
         if message_type == 'new':
             responsible = f'Ответственный: {user_name}'
         else:
             old_user_name = self.generate_responsible(old_responsible_id, message_type)
             change_responsible = f'{old_user_name} → {user_name}'
             responsible = f'{self.emoji["recycle"]}Смена ответственного: {change_responsible}'
+        category = f'{self.emoji["category"]}*\#{category_name}*'
         message_text = f'{self.emoji["doc"]}{markdownv2_converter(deal["title"])}'
-        message = f'{bid}\n{responsible}\n\n{message_text}'
+        message = f'{bid}\n{responsible}\n{category}\n\n{message_text}'
         return message
 
     def generate_responsible(self, user_id, message_type='new'):
@@ -193,10 +208,13 @@ class Bitrix24Parser:
             name = f'{self.emoji["person"]}__{user_name}__'
         return name
 
-    def remove_closed_deals_db(self):
+    def remove_closed_deals(self):
         for deal in self.deals_db.select():
             if not self.deal_in_deals_opened(str(deal.id)):
-                deal.delete_instance()
+                new_message_text = f'{self.emoji["check"]}Закрыта\\!\n\n{deal.message_text}'
+                message_id = self.bot.edit_exist_message(deal.message_id, new_message_text)
+                if message_id:
+                    deal.delete_instance()
 
     def generate_users(self):
         bitrix24_users = self.connect.get_all(
@@ -210,6 +228,19 @@ class Bitrix24Parser:
             self.users[user['ID']] = f'{user["NAME"]} {user["LAST_NAME"]}'
         if not os.path.exists(self.settings.telegram_id_list_file):
             self.settings.create_telegram_id_list(self.users)
+
+    def generate_categories(self):
+        bitrix24_categories = self.connect.get_all(
+            'crm.dealcategory.list',
+            params={
+                'select': ['ID', 'NAME'],
+                'filter': {'IS_LOCKED': 'N'}
+            }
+        )
+        self.categories['0'] = 'Общее'
+        for category in bitrix24_categories:
+            category_without_spaces = str(category['NAME']).replace(' ', '_')
+            self.categories[category['ID']] = category_without_spaces
 
     def generate_opened_deals(self):
         self.deals_opened = self.connect.get_all(
@@ -318,6 +349,22 @@ class TlgrmBot:
             disable_web_page_preview=True,
         )
         return message.message_id
+
+    def edit_exist_message(self, message_id, message_text):
+        message = self.bot.edit_message_text(
+            text=message_text,
+            chat_id=self.chatid,
+            message_id=message_id,
+            parse_mode='MarkdownV2',
+            disable_web_page_preview=True,
+        )
+        return message.message_id
+
+    def delete_message(self, message_id):
+        self.bot.delete_message(
+            chat_id=self.chatid,
+            message_id=message_id,
+        )
 
     def alive(self):
         try:

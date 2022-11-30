@@ -18,6 +18,10 @@ db_proxy = peewee.DatabaseProxy()
 
 
 def markdownv2_converter(text):
+    """
+    Функция преобразует текст с учётом экранирования требуемых символов:
+    https://core.telegram.org/bots/api#markdownv2-style
+    """
     symbols_for_replace = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for symbol in symbols_for_replace:
         text = text.replace(symbol, '\\' + symbol)
@@ -25,6 +29,9 @@ def markdownv2_converter(text):
 
 
 def check_online(url):
+    """
+    Функция проверяет доступность домена из ссылки
+    """
     parsed_url = urlparse(url)
     base_url = '{uri.scheme}://{uri.netloc}/'.format(uri=parsed_url)
     if requests.get(base_url).status_code == 200:
@@ -52,6 +59,9 @@ class BaseModel(peewee.Model):
 
 
 class Deals(BaseModel):
+    """
+    Скелет БД
+    """
     id = peewee.IntegerField()
     category_id = peewee.IntegerField()
     assigned_by_id = peewee.IntegerField()
@@ -69,6 +79,7 @@ class Bitrix24Parser:
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
+        self.categories = {}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
@@ -80,11 +91,13 @@ class Bitrix24Parser:
             'person': '\U0001F9D1',     # 🧑
             'pin': '\U0001F4CC',        # 📌
             'doc': '\U0001F4CB',        # 📋
-            'recycle': '\U0000267B'     # ♻
+            'recycle': '\U0000267B',    # ♻
+            'category': '\U0001F4CE',   # 📎
         }
 
     def run(self):
         self.generate_users()
+        self.generate_categories()
         self.generate_opened_deals()
         self.remove_closed_deals_db()
         self.check_new_deals()
@@ -134,6 +147,7 @@ class Bitrix24Parser:
             if message_id:
                 deal_lower['message_id'] = message_id
                 deals_new_lower.append(deal_lower)
+                # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 time.sleep(3.5)
         self.deals_db.insert_many(deals_new_lower).execute()
 
@@ -151,20 +165,24 @@ class Bitrix24Parser:
             if message_id:
                 deal_in_db.assigned_by_id = assigned_by_id
                 self.deals_db.bulk_update([deal_in_db], fields=[self.deals_db.assigned_by_id])
+                # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
+                time.sleep(3.5)
 
     def generate_message(self, deal, message_type='new', old_responsible_id=None):
         bitrix24_id = deal['assigned_by_id']
         deal_id = markdownv2_converter(deal['id'])
         user_name = self.generate_responsible(bitrix24_id)
-        bid = f'{self.emoji["pin"]}Заявка №*{deal_id}*'
+        bid = f'{self.emoji["pin"]}Заявка *\#Deal\\_{deal_id}*'
+        category_name = markdownv2_converter(self.categories[deal['category_id']])
         if message_type == 'new':
             responsible = f'Ответственный: {user_name}'
         else:
             old_user_name = self.generate_responsible(old_responsible_id, message_type)
             change_responsible = f'{old_user_name} → {user_name}'
             responsible = f'{self.emoji["recycle"]}Смена ответственного: {change_responsible}'
+        category = f'{self.emoji["category"]}*\#{category_name}*'
         message_text = f'{self.emoji["doc"]}{markdownv2_converter(deal["title"])}'
-        message = f'{bid}\n{responsible}\n\n{message_text}'
+        message = f'{bid}\n{responsible}\n{category}\n\n{message_text}'
         return message
 
     def generate_responsible(self, user_id, message_type='new'):
@@ -197,6 +215,19 @@ class Bitrix24Parser:
             self.users[user['ID']] = f'{user["NAME"]} {user["LAST_NAME"]}'
         if not os.path.exists(self.settings.telegram_id_list_file):
             self.settings.create_telegram_id_list(self.users)
+
+    def generate_categories(self):
+        bitrix24_categories = self.connect.get_all(
+            'crm.dealcategory.list',
+            params={
+                'select': ['ID', 'NAME'],
+                'filter': {'IS_LOCKED': 'N'}
+            }
+        )
+        self.categories['0'] = 'Общее'
+        for category in bitrix24_categories:
+            category_without_spaces = str(category['NAME']).replace(' ', '_')
+            self.categories[category['ID']] = category_without_spaces
 
     def generate_opened_deals(self):
         self.deals_opened = self.connect.get_all(

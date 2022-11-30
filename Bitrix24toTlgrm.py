@@ -144,7 +144,7 @@ class Bitrix24Parser:
         deals_new_lower = []
         for deal in self.deals_new:
             deal_lower = dict_key_lower(deal)
-            message_text = self.generate_message(deal_lower)
+            message_text = self.generate_message(deal=deal_lower)
             message_id = self.bot.send_text_message(message_text)
             if message_id:
                 deal_lower['message_id'] = message_id
@@ -163,7 +163,11 @@ class Bitrix24Parser:
                 self.deals_db.id == deal_id,
             )
             assigned_by_id_old = str(deal_in_db.assigned_by_id)
-            message_text = self.generate_message(deal, 'update', assigned_by_id_old)
+            message_text = self.generate_message(
+                deal=deal,
+                new_message=False,
+                old_responsible_id=assigned_by_id_old
+            )
             message_id = self.bot.send_text_message(message_text)
             if message_id:
                 self.bot.delete_message(deal_in_db.message_id)
@@ -178,16 +182,16 @@ class Bitrix24Parser:
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 time.sleep(3.5)
 
-    def generate_message(self, deal, message_type='new', old_responsible_id=None):
+    def generate_message(self, deal, new_message=True, old_responsible_id=None):
         bitrix24_id = deal['assigned_by_id']
         deal_id = markdownv2_converter(deal['id'])
         user_name = self.generate_responsible(bitrix24_id)
         bid = f'{self.emoji["pin"]}Заявка №*{deal_id}*'
         category_name = markdownv2_converter(self.categories[deal['category_id']])
-        if message_type == 'new':
+        if new_message:
             responsible = f'Ответственный: {user_name}'
         else:
-            old_user_name = self.generate_responsible(old_responsible_id, message_type)
+            old_user_name = self.generate_responsible(old_responsible_id, new_message)
             change_responsible = f'{old_user_name} → {user_name}'
             responsible = f'{self.emoji["recycle"]}Смена ответственного: {change_responsible}'
         category = f'{self.emoji["category"]}*\#{category_name}*'
@@ -195,9 +199,9 @@ class Bitrix24Parser:
         message = f'{bid}\n{responsible}\n{category}\n\n{message_text}'
         return message
 
-    def generate_responsible(self, user_id, message_type='new'):
+    def generate_responsible(self, user_id, new_message=True):
         user_name = markdownv2_converter(self.users[user_id])
-        if message_type == 'new':
+        if new_message:
             try:
                 telegram_id = self.settings.tlgrm_id[user_id]
             except KeyError:

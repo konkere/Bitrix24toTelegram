@@ -3,9 +3,9 @@
 
 import os
 import re
-import time
 import peewee
 import requests
+from time import sleep
 from telebot import TeleBot
 from datetime import datetime
 from fast_bitrix24 import Bitrix
@@ -80,10 +80,11 @@ class Bitrix24Parser:
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
-        self.categories = {}
+        self.categories = {'0': 'Общее'}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
+        self.deals_change_category = []
         self.deals_db = Deals
         self.db = connect(self.settings.db_url)
         db_proxy.initialize(self.db)
@@ -103,6 +104,8 @@ class Bitrix24Parser:
         self.generate_opened_deals()
         self.remove_closed_deals()
         self.check_new_deals()
+        if self.deals_change_category:
+            self.update_db_and_change_category()
         if self.deals_change_assigned:
             self.update_db_and_change_assigned()
         if self.deals_new:
@@ -112,17 +115,24 @@ class Bitrix24Parser:
         for deal in self.deals_opened:
             if not self.deal_in_db(deal['ID']):
                 self.deals_new.append(deal)
-            elif self.deal_in_db(deal['ID']) and self.assigned_changed(deal['ID'], deal['ASSIGNED_BY_ID']):
-                self.deals_change_assigned.append(deal)
+            elif self.deal_in_db(deal['ID']):
+                category_changed, assigned_changed = self.data_changed(
+                    deal['ID'],
+                    deal['CATEGORY_ID'],
+                    deal['ASSIGNED_BY_ID'],
+                )
+                if category_changed:
+                    self.deals_change_category.append(deal)
+                if assigned_changed:
+                    self.deals_change_assigned.append(deal)
 
-    def assigned_changed(self, deal_id, assigned_id):
+    def data_changed(self, deal_id, category_id, assigned_id):
         deal = self.deals_db.get(
             self.deals_db.id == int(deal_id),
         )
-        if deal.assigned_by_id == int(assigned_id):
-            return False
-        else:
-            return True
+        category_changed = (deal.category_id != int(category_id))
+        assigned_changed = (deal.assigned_by_id != int(assigned_id))
+        return category_changed, assigned_changed
 
     def deal_in_db(self, deal_id):
         try:
@@ -151,7 +161,7 @@ class Bitrix24Parser:
                 deal_lower['message_text'] = message_text
                 deals_new_lower.append(deal_lower)
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
-                time.sleep(3.5)
+                sleep(3.5)
         self.deals_db.insert_many(deals_new_lower).execute()
 
     def update_db_and_change_assigned(self):
@@ -180,7 +190,32 @@ class Bitrix24Parser:
                     self.deals_db.message_text,
                 ])
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
-                time.sleep(3.5)
+                sleep(3.5)
+
+    def update_db_and_change_category(self):
+        for deal in self.deals_change_category:
+            deal = dict_key_lower(deal)
+            deal_id = int(deal['id'])
+            category_id = deal['category_id']
+            category_text = (markdownv2_converter(self.categories[category_id])).replace(' ', '_')
+            deal_in_db = self.deals_db.get(
+                self.deals_db.id == deal_id,
+            )
+            category_id_old = str(deal_in_db.category_id)
+            category_text_old = (markdownv2_converter(self.categories[category_id_old])).replace(' ', '_')
+            message_text_old = deal_in_db.message_text
+            message_text = message_text_old.replace(category_text_old, category_text)
+            message_id = deal_in_db.message_id
+            check_message_id = self.bot.edit_exist_message(message_id, message_text)
+            if check_message_id:
+                deal_in_db.category_id = category_id
+                deal_in_db.message_text = message_text
+                self.deals_db.bulk_update([deal_in_db], fields=[
+                    self.deals_db.category_id,
+                    self.deals_db.message_text,
+                ])
+                # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
+                sleep(3.5)
 
     def generate_message(self, deal, new_message=True, old_responsible_id=None):
         bitrix24_id = deal['assigned_by_id']
@@ -241,7 +276,6 @@ class Bitrix24Parser:
                 'filter': {'IS_LOCKED': 'N'}
             }
         )
-        self.categories['0'] = 'Общее'
         for category in bitrix24_categories:
             category_without_spaces = str(category['NAME']).replace(' ', '_')
             self.categories[category['ID']] = category_without_spaces

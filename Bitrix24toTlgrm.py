@@ -93,8 +93,8 @@ class Bitrix24Parser:
 
     def __init__(self, settings):
         self.settings = settings
-        self.bot = self.generate_bot()
         self.bot_alive = True
+        self.bot = self.generate_bot()
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}

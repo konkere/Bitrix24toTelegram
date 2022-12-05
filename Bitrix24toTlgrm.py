@@ -53,6 +53,23 @@ def dict_key_lower(dict_orig):
     return dict_lower
 
 
+def read_id_list(file_with_list, pattern):
+        telegram_id_list = {}
+        with open(file_with_list, 'r+') as file:
+            for line in file.readlines():
+                line = line.rstrip('\n')
+                re_line = re.match(pattern, line)
+                try:
+                    bitrix24_id = re_line.group(1)
+                    tlgrm_id = re_line.group(2)
+                    # name = re_line.group(3)
+                except AttributeError:
+                    continue
+                if tlgrm_id:
+                    telegram_id_list[bitrix24_id] = tlgrm_id
+        return telegram_id_list
+
+
 class BaseModel(peewee.Model):
     class Meta:
         database = db_proxy
@@ -76,11 +93,12 @@ class Bitrix24Parser:
 
     def __init__(self, settings):
         self.settings = settings
-        self.bot = TlgrmBot(self.settings.botid, self.settings.chatid)
+        self.bot = self.generate_bot()
+        self.bot_alive = True
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
-        self.categories = {'0': 'Общее'}
+        self.categories = {}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
@@ -98,6 +116,17 @@ class Bitrix24Parser:
             'check': '\U00002705',      # ✅
         }
 
+    def generate_bot(self):
+        bots = {}
+        for chat_id in self.settings.chat_id.keys():
+            bots[chat_id] = TlgrmBot(
+                botid=self.settings.botid,
+                chatid=self.settings.chat_id[chat_id],
+            )
+            if not bots[chat_id].alive():
+                self.bot_alive = False
+        return bots
+
     def run(self):
         self.generate_users()
         self.generate_categories()
@@ -112,9 +141,12 @@ class Bitrix24Parser:
             self.update_db_and_send_new_deals()
 
     def check_new_deals(self):
+        deals_new = []
+        deals_change_category = []
+        deals_change_assigned = []
         for deal in self.deals_opened:
             if not self.deal_in_db(deal['ID']):
-                self.deals_new.append(deal)
+                deals_new.append(deal)
             elif self.deal_in_db(deal['ID']):
                 category_changed, assigned_changed = self.data_changed(
                     deal['ID'],
@@ -122,9 +154,12 @@ class Bitrix24Parser:
                     deal['ASSIGNED_BY_ID'],
                 )
                 if category_changed:
-                    self.deals_change_category.append(deal)
-                if assigned_changed:
-                    self.deals_change_assigned.append(deal)
+                    deals_change_category.append(deal)
+                if assigned_changed and not category_changed:
+                    deals_change_assigned.append(deal)
+        self.deals_new = sorted(deals_new, key=lambda x: int(x['ID']))
+        self.deals_change_category = sorted(deals_change_category, key=lambda x: int(x['ID']))
+        self.deals_change_assigned = sorted(deals_change_assigned, key=lambda x: int(x['ID']))
 
     def data_changed(self, deal_id, category_id, assigned_id):
         deal = self.deals_db.get(
@@ -151,18 +186,20 @@ class Bitrix24Parser:
         return False
 
     def update_db_and_send_new_deals(self):
-        deals_new_lower = []
         for deal in self.deals_new:
             deal_lower = dict_key_lower(deal)
+            category_id = deal_lower['category_id']
             message_text = self.generate_message(deal=deal_lower)
-            message_id = self.bot.send_text_message(message_text)
-            if message_id:
+            try:
+                message_id = self.bot[category_id].send_text_message(message_text)
+            except KeyError:
+                continue
+            else:
                 deal_lower['message_id'] = message_id
                 deal_lower['message_text'] = message_text
-                deals_new_lower.append(deal_lower)
+                self.deals_db.insert(deal_lower).execute()
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 sleep(3.5)
-        self.deals_db.insert_many(deals_new_lower).execute()
 
     def update_db_and_change_assigned(self):
         for deal in self.deals_change_assigned:
@@ -172,15 +209,16 @@ class Bitrix24Parser:
             deal_in_db = self.deals_db.get(
                 self.deals_db.id == deal_id,
             )
+            category_id = deal['category_id']
             assigned_by_id_old = str(deal_in_db.assigned_by_id)
             message_text = self.generate_message(
                 deal=deal,
                 new_message=False,
                 old_responsible_id=assigned_by_id_old
             )
-            message_id = self.bot.send_text_message(message_text)
+            message_id = self.bot[category_id].send_text_message(message_text)
             if message_id:
-                self.bot.delete_message(deal_in_db.message_id)
+                self.bot[category_id].delete_message(message_id)
                 deal_in_db.assigned_by_id = assigned_by_id
                 deal_in_db.message_id = message_id
                 deal_in_db.message_text = message_text
@@ -197,21 +235,28 @@ class Bitrix24Parser:
             deal = dict_key_lower(deal)
             deal_id = int(deal['id'])
             category_id = deal['category_id']
-            category_text = (markdownv2_converter(self.categories[category_id])).replace(' ', '_')
+            assigned_by_id = deal['assigned_by_id']
             deal_in_db = self.deals_db.get(
                 self.deals_db.id == deal_id,
             )
             category_id_old = str(deal_in_db.category_id)
-            category_text_old = (markdownv2_converter(self.categories[category_id_old])).replace(' ', '_')
-            message_text_old = deal_in_db.message_text
-            message_text = message_text_old.replace(category_text_old, category_text)
-            message_id = deal_in_db.message_id
-            check_message_id = self.bot.edit_exist_message(message_id, message_text)
-            if check_message_id:
+            message_text = self.generate_message(deal)
+            message_id_old = deal_in_db.message_id
+            try:
+                message_id = self.bot[category_id].send_text_message(message_text)
+            except KeyError:
+                self.bot[category_id_old].delete_message(message_id_old)
+                deal_in_db.delete_instance()
+            else:
+                self.bot[category_id_old].delete_message(message_id_old)
                 deal_in_db.category_id = category_id
+                deal_in_db.assigned_by_id = assigned_by_id
                 deal_in_db.message_text = message_text
+                deal_in_db.message_id = message_id
                 self.deals_db.bulk_update([deal_in_db], fields=[
                     self.deals_db.category_id,
+                    self.deals_db.assigned_by_id,
+                    self.deals_db.message_id,
                     self.deals_db.message_text,
                 ])
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
@@ -222,16 +267,14 @@ class Bitrix24Parser:
         deal_id = markdownv2_converter(deal['id'])
         user_name = self.generate_responsible(bitrix24_id)
         bid = f'{self.emoji["pin"]}Заявка №*{deal_id}*'
-        category_name = markdownv2_converter(self.categories[deal['category_id']])
         if new_message:
             responsible = f'Ответственный: {user_name}'
         else:
             old_user_name = self.generate_responsible(old_responsible_id, new_message)
             change_responsible = f'{old_user_name} → {user_name}'
             responsible = f'{self.emoji["recycle"]}Смена ответственного: {change_responsible}'
-        category = f'{self.emoji["category"]}*\#{category_name}*'
         message_text = f'{self.emoji["doc"]}{markdownv2_converter(deal["title"])}'
-        message = f'{bid}\n{responsible}\n{category}\n\n{message_text}'
+        message = f'{bid}\n{responsible}\n\n{message_text}'
         return message
 
     def generate_responsible(self, user_id, new_message=True):
@@ -250,8 +293,9 @@ class Bitrix24Parser:
     def remove_closed_deals(self):
         for deal in self.deals_db.select():
             if not self.deal_in_deals_opened(str(deal.id)):
+                category = str(deal.category_id)
                 new_message_text = f'{self.emoji["check"]}Закрыта\\!\n\n{deal.message_text}'
-                message_id = self.bot.edit_exist_message(deal.message_id, new_message_text)
+                message_id = self.bot[category].edit_exist_message(deal.message_id, new_message_text)
                 if message_id:
                     deal.delete_instance()
 
@@ -277,17 +321,21 @@ class Bitrix24Parser:
             }
         )
         for category in bitrix24_categories:
-            category_without_spaces = str(category['NAME']).replace(' ', '_')
-            self.categories[category['ID']] = category_without_spaces
+            self.categories[category['ID']] = category['NAME']
+        if not os.path.exists(self.settings.chat_id_list_file):
+            self.settings.create_chat_id_list(self.categories)
 
     def generate_opened_deals(self):
-        self.deals_opened = self.connect.get_all(
+        deals_opened = self.connect.get_all(
             'crm.deal.list',
             params={
-                'select': ['ID', 'ASSIGNED_BY_ID', 'TITLE', 'COMMENTS', 'DATE_CREATE', 'CATEGORY_ID'],
+                'select': ['ID', 'ASSIGNED_BY_ID', 'TITLE', 'COMMENTS', 'DATE_CREATE', 'CATEGORY_ID',],
                 'filter': {'CLOSED': 'N'}
             }
         )
+        for deal in deals_opened:
+            if deal['CATEGORY_ID'] in self.settings.chat_id.keys():
+                self.deals_opened.append(deal)
 
 
 class Conf:
@@ -296,17 +344,21 @@ class Conf:
         self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegram')
         self.config_file = os.path.join(self.work_dir, 'settings.conf')
         self.telegram_id_list_file = os.path.join(self.work_dir, 'telegram_id.list')
+        self.chat_id_list_file = os.path.join(self.work_dir, 'chat_id.list')
         self.config = ConfigParser()
         self.exist()
         self.config.read(self.config_file)
         self.botid = self.read_conf('Telegram', 'botid')
-        self.chatid = self.read_conf('Telegram', 'chatid')
         self.webhook = self.read_conf('Bitrix24', 'webhook')
         self.db_url = self.db_url_insert_path(self.read_conf('System', 'db'))
         self.tlgrm_id = {}
+        self.chat_id = {}
         self.re_tlgrm_id = r'^(\d+)=(\d+)?#(.+)$'
+        self.re_chat_id = r'^(\d+)=(-?\d+)?#(.+)$'
         if os.path.exists(self.telegram_id_list_file):
-            self.tlgrm_id = self.read_telegram_id_list()
+            self.tlgrm_id = read_id_list(self.telegram_id_list_file, self.re_tlgrm_id)
+        if os.path.exists(self.chat_id_list_file):
+            self.chat_id = read_id_list(self.chat_id_list_file, self.re_chat_id)
 
     def exist(self):
         if not os.path.isdir(self.work_dir):
@@ -322,7 +374,6 @@ class Conf:
         self.config.add_section('Bitrix24')
         self.config.add_section('System')
         self.config.set('Telegram', 'botid', '000000000:00000000000000000000000000000000000')
-        self.config.set('Telegram', 'chatid', '00000000000000')
         self.config.set('Bitrix24', 'webhook', 'https://0000000000.bitrix24.ru/rest/00/0000000000000000/')
         self.config.set('System', 'db', 'sqlite:///bitrix24deals.db')
         with open(self.config_file, 'w') as config_file:
@@ -342,25 +393,22 @@ class Conf:
             f'<ID Bitrix24>=<ID Телеграм>#<Имя Фамилия (или любой другой текст)>'
         )
 
+    def create_chat_id_list(self, categories):
+        categories_for_write = ''
+        for category in categories:
+            categories_for_write += f'{category}=#{categories[category]}\n'
+        with open(self.chat_id_list_file, 'w') as list_file:
+            list_file.write(categories_for_write)
+        print(
+            f'Нужно привязать ID чатов/групп Телеграма '
+            f'в файле: {self.chat_id_list_file}\n'
+            f'Формат записи (одна на строку):\n'
+            f'<ID Bitrix24>=<ID чата Телеграм>#<Название категории (или любой другой текст)>'
+        )
+
     def read_conf(self, section, setting):
         value = self.config.get(section, setting)
         return value
-
-    def read_telegram_id_list(self):
-        telegram_id_list = {}
-        with open(self.telegram_id_list_file, 'r+') as file:
-            for line in file.readlines():
-                line = line.rstrip('\n')
-                re_line = re.match(self.re_tlgrm_id, line)
-                try:
-                    bitrix24_id = re_line.group(1)
-                    tlgrm_id = re_line.group(2)
-                    # name = re_line.group(3)
-                except AttributeError:
-                    continue
-                if tlgrm_id:
-                    telegram_id_list[bitrix24_id] = tlgrm_id
-        return telegram_id_list
 
     def db_url_insert_path(self, db_url):
         pattern = r'(^[A-z]*:\/\/\/)(.*$)'
@@ -416,5 +464,5 @@ class TlgrmBot:
 if __name__ == '__main__':
     config = Conf()
     btrx24 = Bitrix24Parser(config)
-    if btrx24.online and btrx24.bot.alive():
+    if btrx24.online and btrx24.bot_alive:
         btrx24.run()

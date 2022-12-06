@@ -98,7 +98,7 @@ class Bitrix24Parser:
         self.online = check_online(self.settings.webhook)
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
-        self.categories = {}
+        self.categories = {'0': 'Общее'}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
@@ -216,9 +216,10 @@ class Bitrix24Parser:
                 new_message=False,
                 old_responsible_id=assigned_by_id_old
             )
+            message_id_old = deal_in_db.message_id
             message_id = self.bot[category_id].send_text_message(message_text)
             if message_id:
-                self.bot[category_id].delete_message(message_id)
+                self.bot[category_id].delete_message(message_id_old)
                 deal_in_db.assigned_by_id = assigned_by_id
                 deal_in_db.message_id = message_id
                 deal_in_db.message_text = message_text

@@ -295,7 +295,7 @@ class Bitrix24Parser:
         for deal in self.deals_db.select():
             if not self.deal_in_deals_opened(str(deal.id)):
                 category = str(deal.category_id)
-                new_message_text = f'{self.emoji["check"]}Закрыта\\!\n\n{deal.message_text}'
+                new_message_text = f'{self.emoji["check"]}Закрыта\\!\n\n~{deal.message_text}~'
                 message_id = self.bot[category].edit_exist_message(deal.message_id, new_message_text)
                 if message_id:
                     deal.delete_instance()

@@ -12,6 +12,7 @@ from fast_bitrix24 import Bitrix
 from urllib.parse import urlparse
 from playhouse.db_url import connect
 from configparser import ConfigParser
+from telebot.apihelper import ApiTelegramException
 
 
 db_proxy = peewee.DatabaseProxy()
@@ -114,6 +115,7 @@ class Bitrix24Parser:
             'recycle': '\U0000267B',    # ♻
             'category': '\U0001F4CE',   # 📎
             'check': '\U00002705',      # ✅
+            'warning': '\U000026A0',    # ⚠️
         }
 
     def generate_bot(self):
@@ -211,6 +213,7 @@ class Bitrix24Parser:
             )
             category_id = deal['category_id']
             assigned_by_id_old = str(deal_in_db.assigned_by_id)
+            message_text_old = deal_in_db.message_text
             message_text = self.generate_message(
                 deal=deal,
                 new_message=False,
@@ -219,7 +222,7 @@ class Bitrix24Parser:
             message_id_old = deal_in_db.message_id
             message_id = self.bot[category_id].send_text_message(message_text)
             if message_id:
-                self.bot[category_id].delete_message(message_id_old)
+                self.check_deprecated_message(category_id, message_id_old, message_text_old)
                 deal_in_db.assigned_by_id = assigned_by_id
                 deal_in_db.message_id = message_id
                 deal_in_db.message_text = message_text
@@ -241,15 +244,16 @@ class Bitrix24Parser:
                 self.deals_db.id == deal_id,
             )
             category_id_old = str(deal_in_db.category_id)
+            message_text_old = deal_in_db.message_text
             message_text = self.generate_message(deal)
             message_id_old = deal_in_db.message_id
             try:
                 message_id = self.bot[category_id].send_text_message(message_text)
             except KeyError:
-                self.bot[category_id_old].delete_message(message_id_old)
+                self.check_deprecated_message(category_id_old, message_id_old, message_text_old)
                 deal_in_db.delete_instance()
             else:
-                self.bot[category_id_old].delete_message(message_id_old)
+                self.check_deprecated_message(category_id_old, message_id_old, message_text_old)
                 deal_in_db.category_id = category_id
                 deal_in_db.assigned_by_id = assigned_by_id
                 deal_in_db.message_text = message_text
@@ -262,6 +266,18 @@ class Bitrix24Parser:
                 ])
                 # Задержка из-за ограничения отправки ботом в чят не более 20 сообщений в минуту
                 sleep(3.5)
+
+    def check_deprecated_message(self, category_id, message_id, text):
+        """
+        Бот не может удалить сообщение старше 48 часов
+        https://core.telegram.org/bots/api#deletemessage
+        """
+        bot = self.bot[category_id]
+        try:
+            bot.delete_message(message_id)
+        except ApiTelegramException:
+            new_message_text = f'{self.emoji["warning"]}Устаревшее сообщение\!\n\n~{text}~'
+            bot.edit_exist_message(message_id, new_message_text)
 
     def generate_message(self, deal, new_message=True, old_responsible_id=None):
         bitrix24_id = deal['assigned_by_id']

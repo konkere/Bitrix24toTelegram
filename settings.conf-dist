@@ -1,5 +1,6 @@
 [Telegram]
 botid = 000000000:00000000000000000000000000000000000
+chat_by_department = False
 
 [Bitrix24]
 webhook = https://0000000000.bitrix24.ru/rest/00/0000000000000000/

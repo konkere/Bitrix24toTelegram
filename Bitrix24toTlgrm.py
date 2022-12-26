@@ -29,6 +29,13 @@ def markdownv2_converter(text):
     return text
 
 
+def str2bool(text):
+    text = text.lower()
+    true_variants = ['true', '1', 'yes', 'да', 'y', 'д', 't', 'правда', 'истина']
+    answer = text in true_variants
+    return answer
+
+
 def check_online(url):
     """
     Функция проверяет доступность домена из ссылки
@@ -100,6 +107,7 @@ class Bitrix24Parser:
         self.connect = Bitrix(self.settings.webhook, verbose=False)
         self.users = {}
         self.categories = {'0': 'Общее'}
+        self.departments = {}
         self.deals_opened = []
         self.deals_new = []
         self.deals_change_assigned = []
@@ -132,6 +140,7 @@ class Bitrix24Parser:
     def run(self):
         self.generate_users()
         self.generate_categories()
+        self.generate_departments()
         self.generate_opened_deals()
         self.remove_closed_deals()
         self.check_new_deals()
@@ -295,7 +304,7 @@ class Bitrix24Parser:
         return message
 
     def generate_responsible(self, user_id, new_message=True):
-        user_name = markdownv2_converter(self.users[user_id])
+        user_name = markdownv2_converter(self.users[user_id]['name'])
         if new_message:
             try:
                 telegram_id = self.settings.tlgrm_id[user_id]
@@ -320,12 +329,16 @@ class Bitrix24Parser:
         bitrix24_users = self.connect.get_all(
             'user.get',
             params={
-                'select': ['ID', 'NAME', 'LAST_NAME'],
+                'select': ['ID', 'NAME', 'LAST_NAME', 'UF_DEPARTMENT'],
                 'filter': {'ACTIVE': 'True'}
             }
         )
         for user in bitrix24_users:
-            self.users[user['ID']] = f'{user["NAME"]} {user["LAST_NAME"]}'
+            department = str(user["UF_DEPARTMENT"][0])
+            self.users[user['ID']] = {
+                'name': f'{user["NAME"]} {user["LAST_NAME"]}',
+                'department': department
+            }
         if not os.path.exists(self.settings.telegram_id_list_file):
             self.settings.create_telegram_id_list(self.users)
 
@@ -339,8 +352,20 @@ class Bitrix24Parser:
         )
         for category in bitrix24_categories:
             self.categories[category['ID']] = category['NAME']
-        if not os.path.exists(self.settings.chat_id_list_file):
-            self.settings.create_chat_id_list(self.categories)
+        if not os.path.exists(self.settings.category_id_list_file):
+            self.settings.create_category_id_list(self.categories)
+
+    def generate_departments(self):
+        bitrix24_departments = self.connect.get_all(
+            'department.get',
+            params={
+                'select': ['ID', 'NAME'],
+            }
+        )
+        for department in bitrix24_departments:
+            self.departments[department['ID']] = department['NAME']
+        if not os.path.exists(self.settings.department_id_list_file):
+            self.settings.create_department_id_list(self.departments)
 
     def generate_opened_deals(self):
         deals_opened = self.connect.get_all(
@@ -351,7 +376,12 @@ class Bitrix24Parser:
             }
         )
         for deal in deals_opened:
-            if deal['CATEGORY_ID'] in self.settings.chat_id.keys():
+            if self.settings.chat_by_department:
+                category_id = self.users[deal['ASSIGNED_BY_ID']]['department']
+                deal['CATEGORY_ID'] = category_id
+            else:
+                category_id = deal['CATEGORY_ID']
+            if category_id in self.settings.chat_id.keys():
                 self.deals_opened.append(deal)
 
 
@@ -361,21 +391,34 @@ class Conf:
         self.work_dir = os.path.join(os.getenv('HOME'), '.config', 'Bitrix24toTelegram')
         self.config_file = os.path.join(self.work_dir, 'settings.conf')
         self.telegram_id_list_file = os.path.join(self.work_dir, 'telegram_id.list')
-        self.chat_id_list_file = os.path.join(self.work_dir, 'chat_id.list')
+        self.category_id_list_file = os.path.join(self.work_dir, 'category_id.list')
+        self.department_id_list_file = os.path.join(self.work_dir, 'department_id.list')
         self.config = ConfigParser()
         self.exist()
         self.config.read(self.config_file)
         self.botid = self.read_conf('Telegram', 'botid')
+        self.chat_by_department = str2bool(self.read_conf('Telegram', 'chat_by_department'))
         self.webhook = self.read_conf('Bitrix24', 'webhook')
         self.db_url = self.db_url_insert_path(self.read_conf('System', 'db'))
         self.tlgrm_id = {}
         self.chat_id = {}
+        self.category_id = {}
+        self.department_id = {}
         self.re_tlgrm_id = r'^(\d+)=(\d+)?#(.+)$'
         self.re_chat_id = r'^(\d+)=(-?\d+)?#(.+)$'
+        self.generate_ids()
+
+    def generate_ids(self):
         if os.path.exists(self.telegram_id_list_file):
             self.tlgrm_id = read_id_list(self.telegram_id_list_file, self.re_tlgrm_id)
-        if os.path.exists(self.chat_id_list_file):
-            self.chat_id = read_id_list(self.chat_id_list_file, self.re_chat_id)
+        if os.path.exists(self.category_id_list_file):
+            self.category_id = read_id_list(self.category_id_list_file, self.re_chat_id)
+        if os.path.exists(self.department_id_list_file):
+            self.department_id = read_id_list(self.department_id_list_file, self.re_chat_id)
+        if self.chat_by_department:
+            self.chat_id = self.department_id
+        else:
+            self.chat_id = self.category_id
 
     def exist(self):
         if not os.path.isdir(self.work_dir):
@@ -391,6 +434,7 @@ class Conf:
         self.config.add_section('Bitrix24')
         self.config.add_section('System')
         self.config.set('Telegram', 'botid', '000000000:00000000000000000000000000000000000')
+        self.config.set('Telegram', 'chat_by_department', 'False')
         self.config.set('Bitrix24', 'webhook', 'https://0000000000.bitrix24.ru/rest/00/0000000000000000/')
         self.config.set('System', 'db', 'sqlite:///bitrix24deals.db')
         with open(self.config_file, 'w') as config_file:
@@ -410,17 +454,30 @@ class Conf:
             f'<ID Bitrix24>=<ID Телеграм>#<Имя Фамилия (или любой другой текст)>'
         )
 
-    def create_chat_id_list(self, categories):
+    def create_category_id_list(self, categories):
         categories_for_write = ''
         for category in categories:
             categories_for_write += f'{category}=#{categories[category]}\n'
-        with open(self.chat_id_list_file, 'w') as list_file:
+        with open(self.category_id_list_file, 'w') as list_file:
             list_file.write(categories_for_write)
         print(
             f'Нужно привязать ID чатов/групп Телеграма '
-            f'в файле: {self.chat_id_list_file}\n'
+            f'в файле: {self.category_id_list_file}\n'
             f'Формат записи (одна на строку):\n'
             f'<ID Bitrix24>=<ID чата Телеграм>#<Название категории (или любой другой текст)>'
+        )
+
+    def create_department_id_list(self, departments):
+        departments_for_write = ''
+        for department in departments:
+            departments_for_write += f'{department}=#{departments[department]}\n'
+        with open(self.department_id_list_file, 'w') as list_file:
+            list_file.write(departments_for_write)
+        print(
+            f'Можно привязать ID чатов/групп Телеграма '
+            f'в файле: {self.department_id_list_file}\n'
+            f'Формат записи (одна на строку):\n'
+            f'<ID Bitrix24>=<ID чата Телеграм>#<Название отдела/department (или любой другой текст)>'
         )
 
     def read_conf(self, section, setting):

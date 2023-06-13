@@ -304,7 +304,10 @@ class Bitrix24Parser:
         return message
 
     def generate_responsible(self, user_id, new_message=True):
-        user_name = markdownv2_converter(self.users[user_id]['name'])
+        try:
+            user_name = markdownv2_converter(self.users[user_id]['name'])
+        except KeyError:
+            user_name = 'Неизвестный'
         if new_message:
             try:
                 telegram_id = self.settings.tlgrm_id[user_id]
@@ -330,7 +333,7 @@ class Bitrix24Parser:
             'user.get',
             params={
                 'select': ['ID', 'NAME', 'LAST_NAME', 'UF_DEPARTMENT'],
-                'filter': {'ACTIVE': 'True'}
+                # 'filter': {'ACTIVE': 'True'}
             }
         )
         for user in bitrix24_users:
